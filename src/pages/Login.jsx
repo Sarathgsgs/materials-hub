@@ -1,16 +1,17 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { FaGraduationCap, FaUserGraduate, FaChalkboardTeacher, FaLock, FaUser } from 'react-icons/fa';
+import { FaGraduationCap, FaUserGraduate, FaChalkboardTeacher, FaLock, FaEnvelope } from 'react-icons/fa';
 import { useAuth } from '../context/AuthContext';
 import '../styles/Login.css';
 
 const Login = () => {
   const [selectedRole, setSelectedRole] = useState(null); // 'student' or 'teacher'
-  const [teacherName, setTeacherName] = useState('');
+  const [teacherEmail, setTeacherEmail] = useState('');
   const [teacherPassword, setTeacherPassword] = useState('');
   const [error, setError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   const { loginAsStudent, loginAsTeacher } = useAuth();
   const navigate = useNavigate();
@@ -20,28 +21,44 @@ const Login = () => {
     navigate('/');
   };
 
-  const handleTeacherLogin = (e) => {
+  const handleTeacherLogin = async (e) => {
     e.preventDefault();
     setError('');
 
-    if (!teacherName || !teacherPassword) {
-      setError('Please enter both name and password');
+    if (!teacherEmail || !teacherPassword) {
+      setError('Please enter both email and password');
       return;
     }
 
-    const result = loginAsTeacher(teacherName, teacherPassword);
-    
-    if (result.success) {
-      navigate('/');
-    } else {
-      setError(result.message);
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(teacherEmail)) {
+      setError('Please enter a valid email address');
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const result = await loginAsTeacher(teacherEmail, teacherPassword);
+      
+      if (result.success) {
+        navigate('/');
+      } else {
+        setError(result.message || 'Invalid email or password');
+        setTeacherPassword('');
+      }
+    } catch (error) {
+      setError('An error occurred. Please try again.');
       setTeacherPassword('');
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleBack = () => {
     setSelectedRole(null);
-    setTeacherName('');
+    setTeacherEmail('');
     setTeacherPassword('');
     setError('');
   };
@@ -116,7 +133,7 @@ const Login = () => {
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
           >
-            <button className="back-btn" onClick={handleBack}>
+            <button className="back-btn" onClick={handleBack} disabled={loading}>
               ← Back
             </button>
 
@@ -138,16 +155,18 @@ const Login = () => {
               )}
 
               <div className="form-group">
-                <label htmlFor="name">
-                  <FaUser /> Name
+                <label htmlFor="email">
+                  <FaEnvelope /> Email Address
                 </label>
                 <input
-                  type="text"
-                  id="name"
-                  placeholder="Enter your name"
-                  value={teacherName}
-                  onChange={(e) => setTeacherName(e.target.value)}
+                  type="email"
+                  id="email"
+                  placeholder="teacher@materialhub.com"
+                  value={teacherEmail}
+                  onChange={(e) => setTeacherEmail(e.target.value)}
+                  disabled={loading}
                   autoFocus
+                  required
                 />
               </div>
 
@@ -162,25 +181,35 @@ const Login = () => {
                     placeholder="Enter your password"
                     value={teacherPassword}
                     onChange={(e) => setTeacherPassword(e.target.value)}
+                    disabled={loading}
+                    required
                   />
                   <button
                     type="button"
                     className="toggle-password"
                     onClick={() => setShowPassword(!showPassword)}
+                    disabled={loading}
                   >
                     {showPassword ? '👁️' : '👁️‍🗨️'}
                   </button>
                 </div>
               </div>
 
-              <button type="submit" className="submit-btn">
-                Login as Teacher
+              <button 
+                type="submit" 
+                className="submit-btn"
+                disabled={loading}
+              >
+                {loading ? 'Logging in...' : 'Login as Teacher'}
               </button>
 
               <div className="demo-credentials">
-                <p><strong>Demo Credentials:</strong></p>
-                <p>Name: <code>admin</code> | Password: <code>admin123</code></p>
-                <p>Name: <code>Dr. Smith</code> | Password: <code>smith123</code></p>
+                <p><strong>Demo Teacher Credentials:</strong></p>
+                <p>Email: <code>admin@materialhub.com</code></p>
+                <p>Password: <code>admin123</code></p>
+                <hr style={{ margin: '0.5rem 0', opacity: 0.3 }} />
+                <p>Email: <code>drsmith@materialhub.com</code></p>
+                <p>Password: <code>smith123</code></p>
               </div>
             </form>
           </motion.div>
@@ -190,8 +219,7 @@ const Login = () => {
       {/* Background Decoration */}
       <div className="login-bg-decoration">
         <div className="circle circle-1"></div>
-        <div className="circle circle-2"></div>
-        <div className="circle circle-3"></div>
+          <div className="circle circle-3"></div>
       </div>
     </div>
   );

@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import toast, { Toaster } from 'react-hot-toast';
 import { FaUpload, FaHistory, FaTrash, FaFilePdf, FaTimes, FaCheckCircle } from 'react-icons/fa';
 import { useAuth } from '../context/AuthContext';
 import { semesterData } from '../data/materialsData';
+import { uploadFile, getUploadHistory, deleteFile } from '../services/fileService';
 import '../styles/TeacherDashboard.css';
 
 const TeacherDashboard = () => {
@@ -10,20 +12,32 @@ const TeacherDashboard = () => {
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [selectedSubject, setSelectedSubject] = useState('');
   const [selectedUnit, setSelectedUnit] = useState('');
-  const [fileName, setFileName] = useState('');
-  const [fileSize, setFileSize] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const [uploadHistory, setUploadHistory] = useState([]);
-  const [showSuccessMessage, setShowSuccessMessage] = useState(false);
-  const [activeTab, setActiveTab] = useState('upload'); // 'upload' or 'history'
+  const [activeTab, setActiveTab] = useState('upload');
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [loading, setLoading] = useState(false);
 
-  // Load upload history from localStorage
+  // Load upload history
   useEffect(() => {
-    const saved = localStorage.getItem('uploadHistory');
-    if (saved) {
-      setUploadHistory(JSON.parse(saved));
+    loadUploadHistory();
+  }, [user]);
+
+  const loadUploadHistory = async () => {
+    if (!user?.email) return;
+    
+    setLoading(true);
+    try {
+      const history = await getUploadHistory(user.email);
+      setUploadHistory(history);
+    } catch (error) {
+      console.error('Error loading history:', error);
+      toast.error('Failed to load upload history');
+    } finally {
+      setLoading(false);
     }
-  }, []);
+  };
 
   // Get units for selected subject
   const getUnits = () => {
@@ -36,120 +50,98 @@ const TeacherDashboard = () => {
   const handleFileSelect = (e) => {
     const file = e.target.files[0];
     if (file) {
+      // Check file size (max 50MB)
+      if (file.size > 50 * 1024 * 1024) {
+        toast.error('File size must be less than 50MB');
+        return;
+      }
       setSelectedFile(file);
-      setFileName(file.name);
-      
-      // Calculate file size
-      const sizeInMB = (file.size / (1024 * 1024)).toFixed(2);
-      setFileSize(`${sizeInMB} MB`);
     }
   };
 
   // Handle upload
-  const handleUpload = (e) => {
+  const handleUpload = async (e) => {
     e.preventDefault();
 
     if (!selectedSubject || !selectedUnit || !selectedFile) {
-      alert('Please fill all fields and select a file');
+      toast.error('Please fill all fields and select a file');
       return;
     }
 
     const subject = semesterData.subjects.find(s => s.id === selectedSubject);
     const unit = subject?.units.find(u => u.id === selectedUnit);
 
-    // Create upload record
-    const uploadRecord = {
-      id: Date.now(),
-      fileName: fileName,
-      fileSize: fileSize,
-      subject: subject.name,
-      subjectId: selectedSubject,
-      unit: unit.name,
-      unitId: selectedUnit,
-      uploadedBy: user.name,
-      uploadDate: new Date().toISOString(),
-      fileType: selectedFile.name.split('.').pop().toLowerCase()
-    };
+    setUploading(true);
+    setUploadProgress(0);
 
-    // In a real app, you would upload to server here
-    // For now, we'll simulate by adding to localStorage
+    try {
+      const metadata = {
+        subjectId: selectedSubject,
+        subjectName: subject.name,
+        unitId: selectedUnit,
+        unitName: unit.name,
+        uploadedBy: user.name,
+        uploadedByEmail: user.email
+      };
 
-    // Add to upload history
-    const newHistory = [uploadRecord, ...uploadHistory];
-    setUploadHistory(newHistory);
-    localStorage.setItem('uploadHistory', JSON.stringify(newHistory));
+      await uploadFile(selectedFile, metadata, (progress) => {
+        setUploadProgress(Math.round(progress));
+      });
 
-    // Also add to materialsData (in localStorage)
-    const savedMaterials = localStorage.getItem('materialsData');
-    let materials = savedMaterials ? JSON.parse(savedMaterials) : { ...semesterData };
-    
-    const subjectIndex = materials.subjects.findIndex(s => s.id === selectedSubject);
-    const unitIndex = materials.subjects[subjectIndex].units.findIndex(u => u.id === selectedUnit);
-    
-    const newFile = {
-      name: fileName,
-      type: uploadRecord.fileType === 'pdf' ? 'pdf' : uploadRecord.fileType === 'pptx' ? 'ppt' : 'doc',
-      size: fileSize,
-      path: `/materials/${selectedSubject}/${selectedUnit}/${fileName}`,
-      uploadDate: uploadRecord.uploadDate,
-      uploadedBy: user.name
-    };
-
-    materials.subjects[subjectIndex].units[unitIndex].files.push(newFile);
-    localStorage.setItem('materialsData', JSON.stringify(materials));
-
-    // Show success message
-    setShowSuccessMessage(true);
-    setTimeout(() => setShowSuccessMessage(false), 3000);
-
-    // Reset form
-    resetForm();
-    setShowUploadModal(false);
+      toast.success('File uploaded successfully! 🎉');
+      
+      // Reload history
+      await loadUploadHistory();
+      
+      // Reset form
+      resetForm();
+      setShowUploadModal(false);
+    } catch (error) {
+      console.error('Upload error:', error);
+      toast.error('Failed to upload file: ' + error.message);
+    } finally {
+      setUploading(false);
+      setUploadProgress(0);
+    }
   };
 
   // Reset form
   const resetForm = () => {
     setSelectedSubject('');
     setSelectedUnit('');
-    setFileName('');
-    setFileSize('');
     setSelectedFile(null);
   };
 
   // Delete from history
-  const handleDelete = (id) => {
-    if (window.confirm('Are you sure you want to delete this record?')) {
-      const newHistory = uploadHistory.filter(item => item.id !== id);
-      setUploadHistory(newHistory);
-      localStorage.setItem('uploadHistory', JSON.stringify(newHistory));
+  const handleDelete = async (fileId, storagePath, fileName) => {
+    if (!window.confirm(`Are you sure you want to delete "${fileName}"?`)) {
+      return;
+    }
+
+    try {
+      await deleteFile(fileId, storagePath);
+      toast.success('File deleted successfully');
+      await loadUploadHistory();
+    } catch (error) {
+      console.error('Delete error:', error);
+      toast.error('Failed to delete file');
     }
   };
 
-  // Clear all history
-  const handleClearHistory = () => {
-    if (window.confirm('Are you sure you want to clear all upload history?')) {
-      setUploadHistory([]);
-      localStorage.removeItem('uploadHistory');
-    }
+  // Format file size
+  const formatFileSize = (bytes) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
   };
 
   return (
     <div className="teacher-dashboard">
+      <Toaster position="top-right" />
+      
       <div className="container">
-        {/* Success Message */}
-        <AnimatePresence>
-          {showSuccessMessage && (
-            <motion.div
-              className="success-toast"
-              initial={{ opacity: 0, y: -50 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -50 }}
-            >
-              <FaCheckCircle /> File uploaded successfully!
-            </motion.div>
-          )}
-        </AnimatePresence>
-
         {/* Header */}
         <motion.div
           className="dashboard-header"
@@ -158,9 +150,13 @@ const TeacherDashboard = () => {
         >
           <div>
             <h1>Teacher Dashboard</h1>
-            <p>Welcome back, {user?.name}</p>
+            <p>Welcome back, {user?.name || user?.email}</p>
           </div>
-          <button className="upload-btn" onClick={() => setShowUploadModal(true)}>
+          <button 
+            className="upload-btn" 
+            onClick={() => setShowUploadModal(true)}
+            disabled={uploading}
+          >
             <FaUpload /> Upload Material
           </button>
         </motion.div>
@@ -193,7 +189,7 @@ const TeacherDashboard = () => {
               <form onSubmit={handleUpload}>
                 <div className="form-row">
                   <div className="form-group">
-                    <label>Subject</label>
+                    <label>Subject *</label>
                     <select
                       value={selectedSubject}
                       onChange={(e) => {
@@ -201,6 +197,7 @@ const TeacherDashboard = () => {
                         setSelectedUnit('');
                       }}
                       required
+                      disabled={uploading}
                     >
                       <option value="">Select Subject</option>
                       {semesterData.subjects.map(subject => (
@@ -212,11 +209,11 @@ const TeacherDashboard = () => {
                   </div>
 
                   <div className="form-group">
-                    <label>Unit</label>
+                    <label>Unit *</label>
                     <select
                       value={selectedUnit}
                       onChange={(e) => setSelectedUnit(e.target.value)}
-                      disabled={!selectedSubject}
+                      disabled={!selectedSubject || uploading}
                       required
                     >
                       <option value="">Select Unit</option>
@@ -229,16 +226,6 @@ const TeacherDashboard = () => {
                   </div>
                 </div>
 
-                <div className="form-group">
-                  <label>File Name (Optional - will use original if empty)</label>
-                  <input
-                    type="text"
-                    placeholder="e.g., Chapter 1 Notes.pdf"
-                    value={fileName}
-                    onChange={(e) => setFileName(e.target.value)}
-                  />
-                </div>
-
                 <div className="file-upload-area">
                   <input
                     type="file"
@@ -246,6 +233,7 @@ const TeacherDashboard = () => {
                     accept=".pdf,.ppt,.pptx,.doc,.docx"
                     onChange={handleFileSelect}
                     required
+                    disabled={uploading}
                   />
                   <label htmlFor="file-input" className="file-upload-label">
                     {selectedFile ? (
@@ -253,7 +241,7 @@ const TeacherDashboard = () => {
                         <FaFilePdf size={30} />
                         <div>
                           <p>{selectedFile.name}</p>
-                          <span>{fileSize}</span>
+                          <span>{formatFileSize(selectedFile.size)}</span>
                         </div>
                       </div>
                     ) : (
@@ -266,8 +254,24 @@ const TeacherDashboard = () => {
                   </label>
                 </div>
 
-                <button type="submit" className="submit-upload-btn">
-                  <FaUpload /> Upload File
+                {uploading && (
+                  <div className="upload-progress">
+                    <div className="progress-bar">
+                      <div 
+                        className="progress-fill" 
+                        style={{ width: `${uploadProgress}%` }}
+                      />
+                    </div>
+                    <span>{uploadProgress}% Uploading...</span>
+                  </div>
+                )}
+
+                <button 
+                  type="submit" 
+                  className="submit-upload-btn"
+                  disabled={uploading}
+                >
+                  <FaUpload /> {uploading ? 'Uploading...' : 'Upload File'}
                 </button>
               </form>
             </div>
@@ -283,14 +287,13 @@ const TeacherDashboard = () => {
           >
             <div className="history-header">
               <h3>Upload History</h3>
-              {uploadHistory.length > 0 && (
-                <button className="clear-history-btn" onClick={handleClearHistory}>
-                  <FaTrash /> Clear All
-                </button>
-              )}
             </div>
 
-            {uploadHistory.length === 0 ? (
+            {loading ? (
+              <div className="loading-state">
+                <p>Loading history...</p>
+              </div>
+            ) : uploadHistory.length === 0 ? (
               <div className="empty-history">
                 <FaHistory size={60} color="#ccc" />
                 <p>No uploads yet</p>
@@ -309,18 +312,18 @@ const TeacherDashboard = () => {
                       <FaFilePdf size={24} color="#e74c3c" />
                     </div>
                     <div className="history-details">
-                      <h4>{item.fileName}</h4>
+                      <h4>{item.name}</h4>
                       <div className="history-meta">
-                        <span>{item.subject} - {item.unit}</span>
+                        <span>{item.subjectName} - {item.unitName}</span>
                         <span>•</span>
-                        <span>{item.fileSize}</span>
+                        <span>{formatFileSize(item.size)}</span>
                         <span>•</span>
                         <span>{new Date(item.uploadDate).toLocaleDateString()}</span>
                       </div>
                     </div>
                     <button
                       className="delete-btn"
-                      onClick={() => handleDelete(item.id)}
+                      onClick={() => handleDelete(item.id, item.storagePath, item.name)}
                     >
                       <FaTrash />
                     </button>
@@ -332,7 +335,7 @@ const TeacherDashboard = () => {
         )}
       </div>
 
-      {/* Upload Modal */}
+      {/* Upload Modal (same structure as before) */}
       <AnimatePresence>
         {showUploadModal && (
           <motion.div
@@ -340,7 +343,7 @@ const TeacherDashboard = () => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            onClick={() => setShowUploadModal(false)}
+            onClick={() => !uploading && setShowUploadModal(false)}
           >
             <motion.div
               className="upload-modal"
@@ -351,7 +354,7 @@ const TeacherDashboard = () => {
             >
               <div className="modal-header">
                 <h2><FaUpload /> Upload Material</h2>
-                <button onClick={() => setShowUploadModal(false)}>
+                <button onClick={() => !uploading && setShowUploadModal(false)} disabled={uploading}>
                   <FaTimes />
                 </button>
               </div>
@@ -366,6 +369,7 @@ const TeacherDashboard = () => {
                       setSelectedUnit('');
                     }}
                     required
+                    disabled={uploading}
                   >
                     <option value="">Select Subject</option>
                     {semesterData.subjects.map(subject => (
@@ -381,7 +385,7 @@ const TeacherDashboard = () => {
                   <select
                     value={selectedUnit}
                     onChange={(e) => setSelectedUnit(e.target.value)}
-                    disabled={!selectedSubject}
+                    disabled={!selectedSubject || uploading}
                     required
                   >
                     <option value="">Select Unit</option>
@@ -393,16 +397,6 @@ const TeacherDashboard = () => {
                   </select>
                 </div>
 
-                <div className="form-group">
-                  <label>Custom File Name (Optional)</label>
-                  <input
-                    type="text"
-                    placeholder="Leave empty to use original filename"
-                    value={fileName}
-                    onChange={(e) => setFileName(e.target.value)}
-                  />
-                </div>
-
                 <div className="file-upload-area">
                   <input
                     type="file"
@@ -410,6 +404,7 @@ const TeacherDashboard = () => {
                     accept=".pdf,.ppt,.pptx,.doc,.docx"
                     onChange={handleFileSelect}
                     required
+                    disabled={uploading}
                   />
                   <label htmlFor="modal-file-input" className="file-upload-label">
                     {selectedFile ? (
@@ -417,7 +412,7 @@ const TeacherDashboard = () => {
                         <FaFilePdf size={30} />
                         <div>
                           <p>{selectedFile.name}</p>
-                          <span>{fileSize}</span>
+                          <span>{formatFileSize(selectedFile.size)}</span>
                         </div>
                       </div>
                     ) : (
@@ -430,16 +425,29 @@ const TeacherDashboard = () => {
                   </label>
                 </div>
 
+                {uploading && (
+                  <div className="upload-progress">
+                    <div className="progress-bar">
+                      <div 
+                        className="progress-fill" 
+                        style={{ width: `${uploadProgress}%` }}
+                      />
+                    </div>
+                    <span>{uploadProgress}% Uploading...</span>
+                  </div>
+                )}
+
                 <div className="modal-actions">
                   <button
                     type="button"
                     className="cancel-btn"
                     onClick={() => setShowUploadModal(false)}
+                    disabled={uploading}
                   >
                     Cancel
                   </button>
-                  <button type="submit" className="submit-btn">
-                    <FaUpload /> Upload
+                  <button type="submit" className="submit-btn" disabled={uploading}>
+                    <FaUpload /> {uploading ? 'Uploading...' : 'Upload'}
                   </button>
                 </div>
               </form>
